@@ -1,4 +1,4 @@
-import { parseDirectoryMarkdown } from './directories.js';
+import { parseDirectoryMarkdown, extractionDiagnostics } from './directories.js';
 
 export async function fetchDirectory(source,{ request=fetch }={}) {
   const token=process.env.FIRECRAWL_API_KEY;
@@ -14,5 +14,5 @@ export async function fetchDirectory(source,{ request=fetch }={}) {
   const md=json.data?.markdown||json.markdown;
   if(!md) throw new Error('Firecrawl scrape returned no markdown (blocked, changed or unavailable).');
   const listings=parseDirectoryMarkdown(source,md);
-  return { rawLength:md.length,listings };
+  return { rawLength:md.length,listings,diagnostics:extractionDiagnostics(source,md) };
 }

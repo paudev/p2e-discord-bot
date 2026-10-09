@@ -15,16 +15,17 @@ export async function runScan({preview=false,deps={}}={}) {
   try {
     const results=await Promise.all(feeds.map(async source=>{
       try{
-        const {listings,rawLength}=await read(source);
+        const {listings,rawLength,diagnostics}=await read(source);
         const accepted=listings.map(item=>validateDiscovery(source.id,item)).filter(Boolean);
-        return {source,listings,accepted,rawLength};
+        return {source,listings,accepted,rawLength,diagnostics};
       }catch(e){return {source,error:String(e.message||e).slice(0,180)};}
     }));
     const summary={ok:true,preview,sources:[],candidates:0,posted:0,seeded:0,errors:[]};
     for(const entry of results) {
-      const {source,error,listings=[],accepted=[],rawLength=0}=entry;
+      const {source,error,listings=[],accepted=[],rawLength=0,diagnostics}=entry;
       if(error){summary.errors.push({source:source.name,error});summary.sources.push({source:source.name,error});continue;}
       const info={source:source.name,bytes:rawLength,extracted:listings.length,eligible:accepted.length};
+      if(preview&&diagnostics) info.diagnostics=diagnostics;
       summary.candidates+=accepted.length;
       // A zero on a known upcoming-oriented page is likely broken extraction,
       // not a valid first baseline. DappRadar may legitimately have no upcoming games.

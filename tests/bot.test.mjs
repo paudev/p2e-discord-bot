@@ -87,3 +87,20 @@ test('first scan baselines, subsequent scan posts newly added game only, preview
  const newScan=await runScan({deps});assert.equal(newScan.posted,1);
  await runScan({deps});assert.equal(posts,1);
 });
+
+
+test('PlayToEarn supports linked Alpha/Beta statuses and excludes Live / No-P2E',()=>{
+ const sample='| 1 | [New Hero](https://playtoearn.com/blockchaingame/new-hero) | | | [Alpha](https://playtoearn.com/status/alpha) | Yes | Crypto |\n'
+ +'| 2 | [Old Live](https://playtoearn.com/blockchaingame/live) | | | [Live](https://playtoearn.com/status/live) | Yes | Crypto |\n'
+ +'| 3 | [Non P2E](https://playtoearn.com/blockchaingame/non-p2e) | | | [Beta](https://playtoearn.com/status/beta) | Yes | No |';
+ assert.deepEqual(parseDirectoryMarkdown(sources[1],sample).map(x=>x.title),['New Hero']);
+});
+test('Magic Square accepts plain Upcoming badge but excludes non-games',()=>{
+ const sample='# Validation Starting Soon\nUpcoming\n'
+ +'[Black Snow](https://magicsquare.io/store/projects/black-snow)\nGames • Play To Earn\nAR game\n'
+ +'[View](https://magicsquare.io/store/projects/black-snow)\nUpcoming\n'
+ +'[StakeLayer](https://magicsquare.io/store/projects/stakelayer)\nDeFi • Staking\n'
+ +'[View](https://magicsquare.io/store/projects/stakelayer)\nUpcoming\n'
+ +'[Greendale](https://magicsquare.io/store/projects/greendale)\nGames • GameFi\nFarm game\n';
+ assert.deepEqual(parseDirectoryMarkdown(sources[0],sample).map(x=>x.title),['Black Snow','Greendale']);
+});

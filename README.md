@@ -39,6 +39,8 @@ This code implements adapters for the three requested public listing pages but t
 7. On cron-job.org schedule an HTTP GET request to `https://YOUR-PROJECT.vercel.app/api/scan` every **four hours**, with the custom header `Authorization: Bearer YOUR_CRON_SECRET`. Firecrawl's free-tier usage depends on current pricing; three basic page scrapes x 6 runs/day x 30 days is **540 scrape calls/month**, before premium features or retries.
 8. Run one normal scan. It will baseline existing games without posting. New eligible games discovered on later runs are sent to Discord.
 
+When `?preview=1` is used, each source now reports `diagnostics` (link counts, table rows, a short URL-redacted public sample) so a layout change can be diagnosed without leaking any API credentials.
+
 ### Common troubleshooting
 
 - `401 Unauthorized`: wrong `Authorization: Bearer` header or CRON_SECRET.

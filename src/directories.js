@@ -49,6 +49,22 @@ function linkFrom(block,predicate,base) {
   return null;
 }
 
+
+function plainCell(value) {
+  return String(value ?? '').replace(/!?\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\\([\\*_`|])/g, '$1').replace(/[*_`#]/g, '').replace(/\s+/g, ' ').trim();
+}
+function listingLinks(value, base) {
+  const output=[];
+  for(const match of value.matchAll(/\[([^\]\n]{2,160})\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g)) {
+    try {
+      const u=new URL(match[2],base);
+      if(u.protocol==='https:') output.push({title:plainCell(match[1]),url:u.href,index:match.index,length:match[0].length});
+    } catch { /* invalid link */ }
+  }
+  return output;
+}
+
 export function parseDirectoryMarkdown(source, markdown) {
   if (typeof markdown!=='string'||!markdown.trim()) throw new Error('Firecrawl returned empty markdown.');
   if (markdown.length>1_500_000) throw new Error('Source page exceeds 1.5MB markdown safety limit.');
@@ -58,29 +74,41 @@ export function parseDirectoryMarkdown(source, markdown) {
     if (!entries.some(x=>x.url===candidate.url)) entries.push(candidate);
   };
   if (source.id==='magic-square') {
-    // Each upcoming card has a link to /store/projects/<slug>, a Games category, and an Upcoming label.
-    // Use the card boundary rather than guessing that any link on the page is a game.
-    const blocks=markdown.split(/(?=^\s*(?:[-*]\s*)?(?:\[Upcoming\]\([^)]*\)|Upcoming)\s*$)/gmi);
-    for (const block of blocks.slice(0,500)) {
-      if (!/^\s*(?:[-*]\s*)?(?:\[Upcoming\]\([^)]*\)|Upcoming)\s*$/im.test(block.slice(0,100))) continue;
-      if (!/\bGames\s*[•|]\s*(?:Play To Earn|GameFi|NFTs|PvP|Metaverse|Gaming|RPG|MMORPG)\b/i.test(block)) continue;
-      const a=linkFrom(block,(u)=>u.hostname==='magicsquare.io' && /^\/store\/projects\/[^/?#]+/.test(u.pathname),source.url);
-      if (!a) continue;
-      const lines=block.split('\n').map(trim).filter(Boolean);
-      const categoryIndex=lines.findIndex(line=>/^Games\s*[•|]/i.test(line));
-      const description=categoryIndex>=0?lines[categoryIndex+1]||'':'';
-      remember({ ...a,status:'upcoming',description,eventDate:datedEvent(description) });
+    // The whole URL is an Upcoming directory; the badge is not necessarily
+    // on a separate line. Look for game categories beside project-name links.
+    const all=listingLinks(markdown,source.url)
+      .filter(a=>new URL(a.url).hostname==='magicsquare.io' && /\/store\/projects\/[^/?#]+/.test(new URL(a.url).pathname));
+    for(const a of all) {
+      if(!a.title || /^(upcoming|view|view hot offer|details|image|open app)$/i.test(a.title)) continue;
+      const next=all.find(b=>b.index>a.index && b.url!==a.url);
+      const after=markdown.slice(a.index+a.length,
+        Math.min(a.index+a.length+650,next?.index??markdown.length));
+      const gameCategory=/\bGames?\b[\s*•|:/–—-]*(?:Play\s*To\s*Earn|GameFi|NFTs?|PvP|Metaverse|Gaming|RPG|MMORPG|MMO|Platform|Strategy|Action|Adventure)\b/i;
+      if(!gameCategory.test(after)) continue;
+      const desc=after.split('\n').map(plainCell).find(x=>x && !/^(Games|Upcoming|View|Image)/i.test(x))||'';
+      remember({title:a.title,url:a.url,status:'upcoming',
+        description:desc.slice(0,350)||'Upcoming game listing on Magic Square',
+        eventDate:datedEvent(after)});
     }
   } else if (source.id==='playtoearn') {
-    // Parse only game rows that expose an explicitly pre-release status, never the sponsored row.
-    for (const line of markdown.split('\n')) {
-      if (!/^\s*\|.*\|\s*$/.test(line)||!statusPattern.test(line)) continue;
-      const columns=line.split('|').map(trim).filter(Boolean);
-      const statusColumn=columns.find(x=>/^(Development|Develop\.|Alpha|Beta|Presale|Upcoming|Playtest|Early Access)$/i.test(x));
-      if (!statusColumn) continue;
-      if (/\bNo(?:-P2E)?\b/i.test(columns.at(-4)||'') && /\bNo(?:-P2E)?\b/i.test(columns.at(-3)||'')) continue;
-      const a=linkFrom(line,(u)=>/^(?:www\.)?playtoearn\.com$/.test(u.hostname) && /\b(blockchaingame|games?)\b/i.test(u.pathname) && !/\/new-blockchaingames/.test(u.pathname),source.url);
-      if (a) remember({...a,status:statusColumn.toLowerCase()==='develop.'?'development':statusColumn.toLowerCase(),description:'Pre-release game listing on PlayToEarn',eventDate:datedEvent(line)});
+    // PlayToEarn wraps status labels in markdown links: [Alpha](...), [Beta](...).
+    // Read cells as rendered text, and take the name only from a game-detail URL.
+    for(const line of markdown.split('\n')) {
+      if(!/^\s*\|.*\|\s*$/.test(line) || /\bSponsored\b/i.test(line)) continue;
+      const cells=line.trim().replace(/^\|/,'').replace(/\|$/,'').split(/(?<!\\)\|/).map(x=>x.trim());
+      const statusIndex=cells.findIndex(x=>/^(Development|Develop\.|Alpha|Beta|Presale|Upcoming|Playtest|Early Access)$/i.test(plainCell(x)));
+      if(statusIndex<0) continue;
+      const game=listingLinks(line,source.url).find(a=>{
+        const u=new URL(a.url);
+        return /^(?:www\.)?playtoearn\.com$/i.test(u.hostname)&&/^\/blockchaingame\/[^/?#]+/i.test(u.pathname);
+      });
+      if(!game) continue;
+      // Page column order is Status | F2P | P2E. Reject explicit No-P2E rows.
+      const p2e=plainCell(cells[statusIndex+2]||'');
+      if(/^(?:no|no-p2e|none|not available)$/i.test(p2e)) continue;
+      const status=plainCell(cells[statusIndex]).toLowerCase().replace('develop.','development');
+      remember({title:game.title,url:game.url,status,
+        description:'Pre-release game listing on PlayToEarn',eventDate:datedEvent(line)});
     }
   } else if (source.id==='dappradar') {
     // Games rankings are typically ACTIVE games. Rank/activity is not evidence of future launch.
@@ -92,6 +120,25 @@ export function parseDirectoryMarkdown(source, markdown) {
     }
   } else throw new Error('Unrecognized directory source.');
   return entries.slice(0,150);
+}
+
+
+export function extractionDiagnostics(source, markdown) {
+  const lines=markdown.split('\n');
+  const count=re=>[...markdown.matchAll(re)].length;
+  const example=source.id==='playtoearn'
+    ? lines.find(x=>/^\s*\|/.test(x)&&/\b(?:Alpha|Beta|Development)\b/i.test(x))
+    : source.id==='magic-square'
+      ? lines.find(x=>/\/store\/projects\//.test(x)) : '';
+  return {
+    markdownLines:lines.length,
+    markdownLinks:count(/\]\(https?:\/\/[^)]*\)/g),
+    magicProjectLinks:count(/\/store\/projects\//g),
+    playToEarnGameLinks:count(/\/blockchaingame\//g),
+    tableRows:lines.filter(x=>/^\s*\|.*\|\s*$/.test(x)).length,
+    statusLabelMentions:count(/\b(?:upcoming|development|alpha|beta|presale|playtest)\b/gi),
+    sample:String(example||'').replace(/https?:\/\/[^)\s]+/g,'[url]').slice(0,340)
+  };
 }
 
 export function validateDiscovery(sourceId,entry,now=new Date()) {
