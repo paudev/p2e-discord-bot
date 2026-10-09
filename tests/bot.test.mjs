@@ -176,3 +176,49 @@ test('PlayToEarn game rows support link titles containing pipes',()=>{
  assert.equal(parsed.length,1);
  assert.equal(parsed[0].title,'Computers Rh');
 });
+
+
+test('Magic Square 2-digit estimated launch dates are parsed, expired ones rejected',()=>{
+ const sample='This is an upcoming app, and it is not yet live or validated by community. The estimated launch date is 31 Mar '+String.fromCharCode(39)+'26.';
+ const now=new Date('2026-10-10T00:00:00Z');
+ const past=parseDirectoryMarkdown(sources[0],
+   '[Old Game](https://magicsquare.io/store/projects/old-game)\nGames • PvP\n'+sample)[0];
+ assert.equal(past.eventDate,'past-or-outside-window');
+ assert.equal(validateDiscovery('magic-square',past,now),null);
+ const future=parseDirectoryMarkdown(sources[0],
+   '[New Game](https://magicsquare.io/store/projects/new-game)\nGames • PvP\nEstimated launch date is 31 Dec '+String.fromCharCode(39)+'26.')[0];
+ assert.equal(future.eventDate,'2026-12-31');
+ assert.ok(validateDiscovery('magic-square',future,now));
+});
+test('detail-page enrichment in preview never writes to Redis; cached dates persist',async()=>{
+ process.env.MAX_DETAIL_PAGES_PER_RUN='2';process.env.FIRST_RUN_MODE='baseline';
+ const dt=new Date(Date.now()+10*86400000).toISOString().slice(0,10);
+ const items=[{title:'Next Event',url:'https://magicsquare.io/store/projects/next-event',status:'upcoming',eventDate:null},
+ {title:'Undated Game',url:'https://magicsquare.io/store/projects/undated',status:'upcoming',eventDate:null}];
+ const cache=new Map(),seen=new Set(),stats={reads:0,writes:0,detailCalls:0},initial=new Set();
+ const store={
+  acquireLock:async()=> 'token',releaseLock:async()=>{},
+  reserveDetailOffset:async()=>{stats.writes++;return 0;},
+  detailCacheMany:async candidates=>{stats.reads++;return new Map(candidates.filter(x=>cache.has(x.url)).map(x=>[x.url,cache.get(x.url)]));},
+  saveDetailResult:async(item,out)=>{stats.writes++;cache.set(item.url,{date:out.date||null});},
+  initialized:async id=>initial.has(id),markInitialized:async id=>{initial.add(id);stats.writes++;},
+  markSeenMany:async items=>{items.forEach(x=>seen.add(x.id));stats.writes++;},
+  seenMany:async items=>new Set(items.filter(x=>seen.has(x.id)).map(x=>x.id)),
+  refreshSeenMany:async()=>{},markSeen:async id=>{seen.add(id);stats.writes++;},
+  recordResult:async()=>{}
+ };
+ const deps={sources:[sources[0]],state:store,fetchDirectory:async()=>({listings:items.map(x=>({...x})),rawLength:800}),
+  fetchGameDetail:async(_,entry)=>{stats.detailCalls++;return {date:entry.title==='Next Event'?dt:null,matchedDates:1,outOfWindow:0,bytes:500};},
+  sendDiscord:async()=>{throw Error('Baseline must not post');}
+ };
+ const preview=await runScan({preview:true,deps});
+ assert.equal(preview.candidates,1);assert.equal(stats.writes,0);assert.equal(stats.reads,0);
+ assert.equal(preview.detailChecks.length,2);
+ const baseline=await runScan({deps});
+ assert.equal(baseline.seeded,1);
+ const detailCallsAfterBaseline=stats.detailCalls;
+ const repeat=await runScan({deps});
+ assert.equal(repeat.candidates,1);assert.equal(repeat.posted,0);
+ assert.equal(stats.detailCalls,detailCallsAfterBaseline);
+ assert.equal(repeat.cachedDetailCount,2);
+});

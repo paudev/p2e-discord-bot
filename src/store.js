@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 const namespace='cryptoph:p2e:firecrawl:v1';
 const key=name=>`${namespace}:${name}`;
+const detailKey=url=>key('detail:'+createHash('sha256').update(url).digest('hex').slice(0,32));
 export const seenRetentionSeconds=()=>{
   const days=Number(process.env.SEEN_RETENTION_DAYS||90);
   return (Number.isInteger(days)?Math.max(7,Math.min(365,days)):90)*86400;
@@ -49,6 +50,34 @@ export const state={
     for(let i=0;i<items.length;i+=50){
       await pipeline(items.slice(i,i+50).map(x=>['EXPIRE',key(`seen:${x.id}`),seenRetentionSeconds()]));
     }
+  },
+  async detailCacheMany(items) {
+    const result=new Map();
+    for(let i=0;i<items.length;i+=80) {
+      const batch=items.slice(i,i+80);
+      const values=await command('MGET',...batch.map(item=>detailKey(item.url)));
+      batch.forEach((item,j)=>{
+        if(!values?.[j])return;
+        try {
+          const parsed=JSON.parse(values[j]);
+          if(parsed&&typeof parsed==='object')result.set(item.url,parsed);
+        }catch{ /* ignore stale cache format */ }
+      });
+    }
+    return result;
+  },
+  async saveDetailResult(item,result) {
+    // The cache preserves a discovered launch date across later directory
+    // scans, even when the directory itself never displays that date.
+    const payload={date:result.date||null,checkedAt:new Date().toISOString()};
+    return command('SET',detailKey(item.url),JSON.stringify(payload),'EX',7*86400);
+  },
+  // One shared rotating cursor across all directory listings. Preview never
+  // touches this counter; normal scans advance it by the detail-page budget.
+  async reserveDetailOffset(count){
+    const step=Math.max(1,Math.min(20,Number(count)||1));
+    const next=Number(await command('INCRBY',key('detail-cursor'),step));
+    return Math.max(0,next-step);
   },
   async acquireLock(){
     const token=randomUUID();

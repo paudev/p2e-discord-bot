@@ -25,39 +25,55 @@ export function upcomingWindow(now=new Date()) {
   return {today,until:new Date(Date.parse(today+'T00:00:00Z')+days*86400000).toISOString().slice(0,10)};
 }
 
-// Dates must identify future game events. Publication timestamps and generic
-// "upcoming" labels do not qualify as actual launch/playtest dates.
+// Event dates are extracted only from nearby launch/playtest language,
+// never from listing timestamps, copyright years or unspecific "upcoming" tags.
 const monthIndex=name=>['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
   .indexOf(String(name).toLowerCase().slice(0,3))+1;
 const monthPattern='(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember|t)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
 const dateFormats=[
-  {regex:/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/g,parts:m=>[+m[1],+m[2],+m[3]]},
+  {regex:/\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/g,parts:m=>[+m[1],+m[2],+m[3]]},
   {regex:new RegExp('\\b'+monthPattern+'\\.?\\s+([0-3]?\\d)(?:st|nd|rd|th)?,?\\s+(20\\d{2})\\b','gi'),
    parts:m=>[+m[3],monthIndex(m[1]),+m[2]]},
   {regex:new RegExp('\\b([0-3]?\\d)(?:st|nd|rd|th)?\\s+'+monthPattern+'\\.?[,]?\\s+(20\\d{2})\\b','gi'),
-   parts:m=>[+m[3],monthIndex(m[2]),+m[1]]}
+   parts:m=>[+m[3],monthIndex(m[2]),+m[1]]},
+  // Magic Square uses "31 Mar '26" on individual app detail pages.
+  {regex:new RegExp('\\b([0-3]?\\d)(?:st|nd|rd|th)?\\s+'+monthPattern+'\\.?\\s+[\\u0027\\u2019](\\d{2})\\b','gi'),
+   parts:m=>[2000+(+m[3]),monthIndex(m[2]),+m[1]]},
+  {regex:new RegExp('\\b'+monthPattern+'\\.?\\s+([0-3]?\\d)(?:st|nd|rd|th)?[,]?\\s+[\\u0027\\u2019](\\d{2})\\b','gi'),
+   parts:m=>[2000+(+m[3]),monthIndex(m[1]),+m[2]]}
 ];
-// Require event language immediately preceding the date to avoid irrelevant dates.
-const eventContext=/\b(?:launch(?:es|ing)?|releas(?:e|es|ing)|beta|alpha|playtest|testnet|early[\s-]access|presale|registration|starts?|begins?|opens?|scheduled|slated|debut(?:s)?|goes live)\b[^.!?\n]{0,90}$/i;
-function datedEvent(value,now=new Date()) {
-  const sourceText=trim(value).slice(0,1600);
+// A year is essential: inferring 2026 for a bare "October 16" could turn
+// an old announcement into a false upcoming launch.
+const eventWords='(?:launch(?:es|ed|ing)?|releas(?:e|es|ed|ing)|beta|alpha|playtest|testnet|early[\\s-]access|presale|pre[\\s-]registration|registration|start(?:s|ing)?|begin(?:s|ning)?|open(?:s|ing)?|scheduled|slated|debut(?:s)?|goes live|go live)';
+const eventBefore=new RegExp('\\b'+eventWords+'\\b[^.!?\\n]{0,100}$','i');
+const eventAfter=new RegExp('^.{0,38}\\b'+eventWords+'\\b','i');
+const staleEvent=/\b(?:previously|last year|originally|was released|already launched|postponed|cancelled)\b/i;
+export function extractUpcomingEventDate(value,now=new Date()) {
+  const sourceText=String(value??'').replace(/\r/g,'').slice(0,100000);
   const {today,until}=upcomingWindow(now);
-  const validFuture=[];
-  let foundDatedEvent=false;
+  const upcoming=[];
+  let oldDates=0, matchedDates=0;
   for(const fmt of dateFormats) {
     for(const match of sourceText.matchAll(fmt.regex)) {
-      const preceding=sourceText.slice(Math.max(0,match.index-105),match.index);
-      if(!eventContext.test(preceding))continue;
+      const left=sourceText.slice(Math.max(0,match.index-120),match.index).replace(/\s+/g,' ');
+      const right=sourceText.slice(match.index+match[0].length,match.index+match[0].length+55).replace(/\s+/g,' ');
+      if(!eventBefore.test(left) && !eventAfter.test(right))continue;
       const [year,month,day]=fmt.parts(match);
       const parsed=new Date(Date.UTC(year,month-1,day));
       if(parsed.getUTCFullYear()!==year||parsed.getUTCMonth()+1!==month||parsed.getUTCDate()!==day)continue;
-      foundDatedEvent=true;
-      const date=parsed.toISOString().slice(0,10);
-      if(date>=today&&date<=until)validFuture.push(date);
+      matchedDates++;
+      const iso=parsed.toISOString().slice(0,10);
+      if(iso<today||iso>until){oldDates++;continue;}
+      const context=left.slice(-85)+' '+match[0]+' '+right.slice(0,35);
+      if(staleEvent.test(context))continue;
+      upcoming.push(iso);
     }
   }
-  if(validFuture.length)return validFuture.sort()[0];
-  return foundDatedEvent?'past-or-outside-window':null;
+  return {date:upcoming.sort()[0]||null,matchedDates,outOfWindow:oldDates};
+}
+function datedEvent(value,now=new Date()) {
+  const {date,matchedDates}=extractUpcomingEventDate(value,now);
+  return date||(matchedDates?'past-or-outside-window':null);
 }
 
 function linkFrom(block,predicate,base) {

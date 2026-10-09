@@ -19,7 +19,10 @@ export default async function handler(req, res) {
 
   const preview = new URL(req.url, 'https://localhost').searchParams.get('preview') === '1';
   try {
-    const result = await runScan({ preview });
+    const requestedOffset = new URL(req.url, 'https://localhost').searchParams.get('detailOffset');
+    const detailOffset = preview && /^\d{1,6}$/.test(requestedOffset || '')
+      ? Math.min(100000, Number(requestedOffset)) : 0;
+    const result = await runScan({ preview, detailOffset });
     return res.status(result.busy ? 409 : result.ok ? 200 : 502).json(result);
   } catch (e) {
     console.error('scan:', e);

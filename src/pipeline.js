@@ -1,13 +1,14 @@
 import { sources, validateDiscovery } from './directories.js';
-import { fetchDirectory } from './firecrawl.js';
+import { fetchDirectory, fetchGameDetail } from './firecrawl.js';
 import { state } from './store.js';
 import { sendDiscord } from './discord.js';
 
 const compareUpcoming=(a,b)=>a.eventDate.localeCompare(b.eventDate)||a.title.localeCompare(b.title)||a.id.localeCompare(b.id);
 
-export async function runScan({preview=false,deps={}}={}) {
+export async function runScan({preview=false,detailOffset=0,deps={}}={}) {
   const storage=deps.state||state;
   const read=deps.fetchDirectory||fetchDirectory;
+  const readDetail=deps.fetchGameDetail||fetchGameDetail;
   const post=deps.sendDiscord||sendDiscord;
   const feeds=deps.sources||sources;
   const firstRunMode=process.env.FIRST_RUN_MODE==='post'?'post':'baseline';
@@ -18,16 +19,73 @@ export async function runScan({preview=false,deps={}}={}) {
     const results=await Promise.all(feeds.map(async source=>{
       try{
         const {listings,rawLength,diagnostics}=await read(source);
-        const accepted=listings.map(item=>validateDiscovery(source.id,item)).filter(Boolean).sort(compareUpcoming);
+        // Details are enriched below, before validation and global ranking.
+        const accepted=listings;
         return {source,listings,accepted,rawLength,diagnostics};
       }catch(e){return {source,error:String(e.message||e).slice(0,180)};}
     }));
-    const summary={ok:true,preview,sources:[],candidates:0,posted:0,seeded:0,errors:[]};
+    // Redis retains successfully extracted detail dates between scans.
+    // Without this, a game discovered from a detail page would disappear
+    // from the next scan's candidate queue when only directory cards refresh.
+    let cachedDetailCount=0;
+    if(!preview&&typeof storage.detailCacheMany==='function') {
+      const every=results.filter(x=>!x.error).flatMap(x=>x.listings.filter(item=>!item.eventDate));
+      const cache=await storage.detailCacheMany(every);
+      for(const item of every){
+        const saved=cache.get(item.url);
+        if(!saved)continue;
+        item._detailCached=true;
+        cachedDetailCount++;
+        if(saved.date)item.eventDate=saved.date;
+      }
+    }
+    // Existing directory cards normally show no dates. Inspect a small set of
+    // individual game pages each run, rotating via Redis so the same two games
+    // are not repeatedly checked. Preview is read-only and uses a query offset.
+    const rawBudget=Number(process.env.MAX_DETAIL_PAGES_PER_RUN??2);
+    const detailBudget=Number.isInteger(rawBudget)?Math.max(0,Math.min(5,rawBudget)):2;
+    const pools=results.filter(x=>!x.error).map(x=>({
+      source:x.source,items:x.listings.filter(item=>!item.eventDate&&!item._detailCached)
+    }));
+    const detailPool=[];
+    let index=0;
+    while(pools.some(p=>index<p.items.length)){
+      for(const group of pools) {
+        if(index<group.items.length)detailPool.push({source:group.source,entry:group.items[index]});
+      }
+      index++;
+    }
+    let checkedOffset=0;
+    const detailChecks=[];
+    if(detailBudget&&detailPool.length) {
+      checkedOffset=preview?Math.max(0,Math.min(100000,Number(detailOffset)||0)):
+        typeof storage.reserveDetailOffset==='function'?await storage.reserveDetailOffset(detailBudget):0;
+      const chosen=[];
+      for(let n=0;n<Math.min(detailBudget,detailPool.length);n++)
+        chosen.push(detailPool[(checkedOffset+n)%detailPool.length]);
+      const checks=await Promise.all(chosen.map(async ({source,entry})=>{
+        try {
+          const value=await readDetail(source,entry);
+          if(!preview&&typeof storage.saveDetailResult==='function')
+            await storage.saveDetailResult(entry,value);
+          if(value.date)entry.eventDate=value.date;
+          return {source:source.name,title:entry.title,url:entry.url,
+            date:value.date||null,matchedDates:value.matchedDates||0,
+            outOfWindow:value.outOfWindow||0,bytes:value.bytes||0};
+        } catch(err) {
+          return {source:source.name,title:entry.title,url:entry.url,error:String(err.message||err).slice(0,140)};
+        }
+      }));
+      detailChecks.push(...checks);
+    }
+    const summary={ok:true,preview,sources:[],candidates:0,posted:0,seeded:0,errors:[],
+      detailChecks,detailOffset:checkedOffset,detailPoolSize:detailPool.length,detailBudget,cachedDetailCount};
     const queued=[];
     const firstRunPostSources=[];
     const sourceInfo=new Map();
     for(const entry of results) {
-      const {source,error,listings=[],accepted=[],rawLength=0,diagnostics}=entry;
+      const {source,error,listings=[],rawLength=0,diagnostics}=entry;
+      const accepted=listings.map(item=>validateDiscovery(source.id,item)).filter(Boolean).sort(compareUpcoming);
       if(error){summary.errors.push({source:source.name,error});summary.sources.push({source:source.name,error});continue;}
       const discardedUndated=listings.filter(x=>!x.eventDate).length;
       const discardedOutOfWindow=listings.filter(x=>x.eventDate==='past-or-outside-window').length;
