@@ -1,81 +1,52 @@
-# CryptoPH · Upcoming P2E Discord Bot
+# CryptoPH · P2E Game Discovery (Firecrawl)
 
-Automatically discover **upcoming** Play-to-Earn/Web3 game launches, betas and playtests, and post source-linked Discord announcements. Designed for Vercel Hobby (no always-running process).
+Cloud-scheduled Discord announcements for **newly discovered pre-release P2E/Web3 games**. Vercel serverless API, Firecrawl extraction, Upstash Redis, Discord webhooks and cron-job.org. **No Google News; no GitHub Actions or workflows.**
 
-**Architecture:** cron-job.org (hourly HTTP schedule) → Vercel `/api/scan` → Google News RSS plus optional RSS/Atom feeds → Upstash Redis (deduplication) → Discord webhook (recommended) or bot HTTP API.
+## Important: check source permissions
 
-## Strict date filter (enabled by default)
+**Firecrawl is a technical tool, not permission to collect data.** At the time of implementation, Magic Square, PlayToEarn and DappRadar all publish restrictions on automated scraping/extraction in their terms. Review each publisher's latest terms and obtain any required permission **before enabling recurring collection**. Do not attempt to circumvent login, captchas, blocks or rate limits.
 
-- **Recent announcement:** article published within the past `NEWS_MAX_AGE_DAYS=7` days.
-- **Future event:** an explicit launch, beta, or playtest calendar date must be present in the RSS title or summary, **today through `UPCOMING_WINDOW_DAYS=90` days ahead** (inclusive).
-- **Timezone:** `UPCOMING_TIMEZONE=Asia/Manila` (CryptoPH).
-- **Automatic database cleanup:** seen/discovered item keys expire after `SEEN_RETENTION_DAYS=90` days from when first saved; Redis deletes expired keys automatically. The first-run markers remain so expiration does not cause a new first-run flood.
-- **Excluded:** past launch dates, undated announcements, generic crypto news, casino/gambling articles, and duplicate headlines.
-- Dates are extracted heuristically from third-party feeds, **not confirmed with developers**. Date-less announcements will be skipped, even if truly upcoming. This is intentional to avoid posting everything.
+- [Magic Square terms](https://docs.magicsquare.io/documents/legal-documents/magic-store-terms-and-conditions)
+- [PlayToEarn terms](https://playtoearn.com/terms)
+- [DappRadar terms](https://dappradar.com/terms)
 
-## 1. Discord channel
+This code implements adapters for the three requested public listing pages but their availability and permission to automate are not guaranteed. Use an authorized feed or provider API instead if permission is unavailable.
 
-In CryptoPH, make `#upcoming-p2e` → **Edit Channel → Integrations → Webhooks → New Webhook**. Name it `CryptoPH Discovery` and copy its URL. The webhook only has access to its configured channel. Alternative: set `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` to use your existing bot (requires View Channel, Send Messages, Embed Links).
+## What it does
 
-## 2. Upstash
+- **Magic Square:** parse cards on the Upcoming Validation Starting Soon page; accept only **Games** categories and **Upcoming** status.
+- **PlayToEarn:** parse listing table rows with an explicit **Development / Alpha / Beta / Presale** status, not Live.
+- **DappRadar:** game rankings usually show *live* games; announce **only** listings explicitly marked upcoming/pre-release. Zero may be correct.
+- **Date constraint:** if a valid event date is provided, only accept it from **today to 90 days ahead** (`UPCOMING_WINDOW_DAYS`). If no actual event date is provided, a newly seen pre-release directory listing can be posted with **"date not announced"**, not a fabricated date.
+- **First run:** `FIRST_RUN_MODE=baseline` records existing qualifying listings and posts nothing, preventing a flood. Later scans post only newly found qualifying listings, max 3 per scan.
+- **Redis:** seen-game markers have 90-day expiry, refreshed for games still in the directory; games that disappear are cleaned up after 90 days. That avoids old still-upcoming listings reappearing every 90 days. Discord messages are never deleted by cleanup.
+- **Security:** CRON_SECRET bearer header and Redis scan lock; Discord mentions disabled; feed errors are explicitly reported instead of silently returning zero.
 
-Create a Redis database at <https://console.upstash.com/>. Copy its **REST URL** and **REST Token**. This stores seen item IDs and prevents repeat announcements after function restarts.
+## Setup (Vercel)
 
-## 3. Vercel
+1. Install Firecrawl from Vercel Marketplace and confirm `FIRECRAWL_API_KEY` is available in your **Production** environment variables. If you configured it after deployment, redeploy.
+2. Create `#upcoming-p2e` Discord channel → Edit Channel → Integrations → Webhooks. Set `DISCORD_WEBHOOK_URL` in Vercel.
+3. Create Upstash Redis and copy `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` into Vercel.
+4. Set `CRON_SECRET` to a private random token, `FIRST_RUN_MODE=baseline`, `UPCOMING_WINDOW_DAYS=90`, `MAX_POSTS_PER_RUN=3`, `SEEN_RETENTION_DAYS=90`.
+5. **Redeploy** to apply environment variables. Make sure your publisher collection permissions are in order before enabling the recurring schedule.
+6. Preview (no writes / Discord posts):
 
-Import this repository <https://github.com/paudev/p2e-discord-bot> at <https://vercel.com/new>. Choose **Other** for the framework, root `./`, production branch `main`. Configure these **Production** environment variables:
+   ```powershell
+   $secret = Read-Host "CRON_SECRET"
+   Invoke-RestMethod 'https://YOUR-PROJECT.vercel.app/api/scan?preview=1' -Headers @{ Authorization = "Bearer $secret" } | ConvertTo-Json -Depth 10
+   ```
 
-```env
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your-real-url
-UPSTASH_REDIS_REST_URL=https://your-database.upstash.io
-UPSTASH_REDIS_REST_TOKEN=your-private-token
-CRON_SECRET=long-random-secret
-NEWS_MAX_AGE_DAYS=7
-UPCOMING_WINDOW_DAYS=90
-UPCOMING_TIMEZONE=Asia/Manila
-FIRST_RUN_MODE=baseline
-MAX_POSTS_PER_RUN=3
-SEEN_RETENTION_DAYS=90
-```
+7. On cron-job.org schedule an HTTP GET request to `https://YOUR-PROJECT.vercel.app/api/scan` every **four hours**, with the custom header `Authorization: Bearer YOUR_CRON_SECRET`. Firecrawl's free-tier usage depends on current pricing; three basic page scrapes x 6 runs/day x 30 days is **540 scrape calls/month**, before premium features or retries.
+8. Run one normal scan. It will baseline existing games without posting. New eligible games discovered on later runs are sent to Discord.
 
-Never add secret values to GitHub. Generate a random secret locally:
+### Common troubleshooting
 
-```sh
-node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
-```
+- `401 Unauthorized`: wrong `Authorization: Bearer` header or CRON_SECRET.
+- `Firecrawl HTTP 401`: missing/invalid Firecrawl API key (separate from CRON_SECRET).
+- `sources[].error`: publisher blocked extraction, response changed, or parser failed. Do not bypass restrictions.
+- `extracted: N, eligible: 0`: games were found, but none met upcoming rules.
+- `extracted: 0` for DappRadar: expected if no explicit upcoming listings are shown; never post live games as upcoming.
+- `200` with `posted: 0`: valid scan, no newly discovered listings or first-run baseline.
+- Keep publisher-facing data checks low-frequency and source-linked. Game status is unverified; no earning promises.
 
-Optional `RSS_FEED_URLS` accepts up to 5 comma-separated public RSS/Atom URLS (no HTML scraping). **Redeploy** after changing Vercel environment variables.
-
-## 4. Preview and first scan
-
-After deploying, `/api/health` is public and `/api/scan` requires `Authorization: Bearer <CRON_SECRET>`. Preview fetches sources without changing Redis or posting:
-
-```powershell
-$secret = Read-Host 'Enter CRON_SECRET'
-Invoke-RestMethod 'https://YOUR_PROJECT.vercel.app/api/scan?preview=1' -Headers @{Authorization="Bearer $secret"}
-```
-
-The first successful non-preview scan with `FIRST_RUN_MODE=baseline` records any currently eligible announcements **without posting** to prevent flooding. Later scans send only newly found matching announcements (up to `MAX_POSTS_PER_RUN`). Setting `FIRST_RUN_MODE=post` *before* the initial scan allows the first matching posts.
-
-## 5. Hourly cron-job.org trigger
-
-At <https://cron-job.org/>, create a scheduled HTTP GET job:
-
-- **URL:** `https://YOUR_PROJECT.vercel.app/api/scan`
-- **Schedule:** hourly
-- **HTTP header:** `Authorization: Bearer YOUR_CRON_SECRET`
-
-Run a test in cron-job.org and check the result. Keep the header value private. Vercel Hobby's own Cron is daily, so the external scheduler provides hourly checks.
-
-## 6. Maintenance
-
-- `GET /api/scan?preview=1`: filtered candidates with estimated upcoming event dates.
-- `GET /api/health`: verifies only that the deployment is reachable.
-- `npm run preview`: local read-only RSS preview (uses `.env` if present).
-- `npm run check`: JavaScript syntax checks.
-- `npm test`: date, deduplication, and Redis TTL behavior checks (after `npm install`).
-- Expired 90-day seen markers will **not delete Discord messages**. They free up Redis storage; old articles are excluded by the 7-day announcement filter, preventing reposts.
-- If no candidates appear, that's expected when articles lack an explicit future date. **Do not** treat publication dates as launch dates.
-- Upstash and Discord delivery require credentials; GitHub code alone does not start posting.
-
-**Safety:** Google News is a lead source, not a verified game directory; announcements may be inaccurate or malicious. Users should verify official developer links. No automatic `@everyone` ping, no earning guarantees. Vercel Hobby is for eligible non-commercial use; review publisher feed terms and Vercel fair-use policies. No scraping.
+Run `npm run check` for syntax checks. `npm test` runs local parser and deduplication checks. A production API call requires configured Firecrawl, Upstash and Discord credentials; this repo has no credentials.

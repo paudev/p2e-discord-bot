@@ -1,69 +1,89 @@
-import { afterEach, test } from 'node:test';
+import {test,afterEach} from 'node:test';
 import assert from 'node:assert/strict';
-import { findUpcomingEventDate } from '../src/feeds.js';
-import { seenRetentionSeconds, state } from '../src/store.js';
-import { runScan } from '../src/pipeline.js';
+import {sources,parseDirectoryMarkdown,validateDiscovery} from '../src/directories.js';
+import {fetchDirectory} from '../src/firecrawl.js';
+import {runScan} from '../src/pipeline.js';
+import {seenRetentionSeconds} from '../src/store.js';
 
-const originalFetch = globalThis.fetch;
-const originalEnv = { ...process.env };
-afterEach(() => { globalThis.fetch = originalFetch; process.env = { ...originalEnv }; });
+const old={...process.env};afterEach(()=>{process.env={...old};});
+const magic=`# Validation Starting Soon
+- [Upcoming](https://magicsquare.io/store/projects/black-snow)
+[Black Snow](https://magicsquare.io/store/projects/black-snow)
+Games • Play To Earn
+A mobile RPG
+[View](https://magicsquare.io/store/projects/black-snow)
+- [Upcoming](https://magicsquare.io/store/projects/wallet)
+[Wallet](https://magicsquare.io/store/projects/wallet)
+DeFi • Wallet
+A wallet
+[View](https://magicsquare.io/store/projects/wallet)
+- [Upcoming](https://magicsquare.io/store/projects/new-game)
+[New Game](https://magicsquare.io/store/projects/new-game)
+Games • GameFi
+New 2026 game
+`;
+const playtoearn=`# New Blockchain Games List
+| # | Name | Blockchain | Device | Status | F2P | P2E |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | [Live Game](https://playtoearn.com/blockchaingame/live-game) | Solana | Web | Live | Yes | Crypto |
+| 2 | [New P2E](https://playtoearn.com/blockchaingame/new-p2e) | Solana | Web | Development | Yes | Crypto |
+| 3 | [Alpha Game](https://playtoearn.com/blockchaingame/alpha-game) | Solana | Web | Alpha | Yes | NFT |
+`;
+const radar=`# Games Rankings
+| [Bomb Crypto](https://dappradar.com/dapp/bomb-crypto) | $1.1m | +10% |
+| [Future Game](https://dappradar.com/dapp/future-game) | Upcoming | 0 |
+`;
 
-test('future dates included, past and beyond horizon excluded', () => {
-  process.env.UPCOMING_WINDOW_DAYS = '90';
-  assert.equal(findUpcomingEventDate('P2E game beta starts October 20, 2026', '', new Date('2026-10-09T12:00:00Z')), '2026-10-20');
-  assert.equal(findUpcomingEventDate('P2E game beta starts October 2, 2026', '', new Date('2026-10-09T12:00:00Z')), null);
-  assert.equal(findUpcomingEventDate('P2E game launches on February 15, 2027', '', new Date('2026-10-09T12:00:00Z')), null);
-  assert.equal(findUpcomingEventDate('P2E game coming soon, release date TBA', '', new Date('2026-10-09T12:00:00Z')), null);
+test('Magic Square: only upcoming game cards',()=>{
+ const result=parseDirectoryMarkdown(sources[0],magic);
+ assert.deepEqual(result.map(i=>i.title),['Black Snow','New Game']);
 });
-
-test('seen markers get 90-day Redis TTL for single and batch storage', async () => {
-  process.env.UPSTASH_REDIS_REST_URL = 'https://redis.example';
-  process.env.UPSTASH_REDIS_REST_TOKEN = 'fake';
-  process.env.SEEN_RETENTION_DAYS = '90';
-  const calls = [];
-  globalThis.fetch = async (url, options) => {
-    const body = JSON.parse(options.body);
-    calls.push({ url, body });
-    return { ok: true, status: 200, json: async () => url.endsWith('/pipeline') ? body.map(() => ({ result: 'OK' })) : { result: 'OK' } };
-  };
-  await state.markSeen('post1', 'posted:123');
-  await state.markSeenMany([{ id: 'post2' }, { id: 'post3' }], 'seeded');
-  assert.equal(seenRetentionSeconds(), 90 * 86400);
-  assert.deepEqual(calls[0].body.slice(-2), ['EX', 90 * 86400]);
-  assert.equal(calls[1].url, 'https://redis.example/pipeline');
-  assert.equal(calls[1].body.length, 2);
-  for (const op of calls[1].body) assert.deepEqual(op.slice(-2), ['EX', 90 * 86400]);
+test('PlayToEarn: development and alpha, never live',()=>{
+ const result=parseDirectoryMarkdown(sources[1],playtoearn);
+ assert.deepEqual(result.map(i=>i.title),['New P2E','Alpha Game']);
 });
-
-test('preview does not write; baseline and later scan do not duplicate', async () => {
-  process.env.UPCOMING_WINDOW_DAYS = '90';
-  process.env.FIRST_RUN_MODE = 'baseline';
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-  const item = { id: 'one', title: 'New P2E beta', date: Date.now(), eventDate: today };
-  const seen = new Set();
-  let initialized = false; let posts = 0;
-  const storage = {
-    acquireLock: async () => 'lock', releaseLock: async () => {}, recordResult: async () => {},
-    initialized: async () => initialized, markInitialized: async () => { initialized = true; },
-    seenMany: async items => new Set(items.filter(x => seen.has(x.id)).map(x => x.id)),
-    markSeenMany: async items => items.forEach(x => seen.add(x.id)),
-    markSeen: async id => seen.add(id)
-  };
-  const deps = { feeds: [{ id: 'a', name: 'Feed' }], fetchFeed: async () => [item], sendDiscord: async () => { posts++; return '123'; }, state: storage };
-  const preview = await runScan({ preview: true, deps });
-  assert.equal(preview.sources[0].found, 1);
-  assert.equal(initialized, false);
-  const baseline = await runScan({ deps });
-  assert.equal(baseline.seeded, 1);
-  assert.equal(posts, 0);
-  const repeat = await runScan({ deps });
-  assert.equal(repeat.posted, 0);
-  assert.equal(posts, 0);
-  const newItem = { ...item, id: 'two' };
-  deps.fetchFeed = async () => [item, newItem];
-  const next = await runScan({ deps });
-  assert.equal(next.posted, 1);
-  const last = await runScan({ deps });
-  assert.equal(last.posted, 0);
-  assert.equal(posts, 1);
+test('DappRadar: only explicitly pre-release',()=>{
+ const result=parseDirectoryMarkdown(sources[2],radar);
+ assert.deepEqual(result.map(i=>i.title),['Future Game']);
+});
+test('date window: reject already expired and too distant',()=>{
+ process.env.UPCOMING_TIMEZONE='Asia/Manila';process.env.UPCOMING_WINDOW_DAYS='90';
+ const base={title:'Soon',url:'https://magicsquare.io/store/projects/soon',status:'upcoming'};
+ const now=new Date('2026-10-09T02:00:00Z');
+ assert.ok(validateDiscovery('magic-square',{...base,eventDate:'2026-10-20'},now));
+ assert.equal(validateDiscovery('magic-square',{...base,eventDate:'2025-01-01'},now),null);
+ assert.equal(validateDiscovery('magic-square',{...base,eventDate:'2027-06-01'},now),null);
+ assert.ok(validateDiscovery('magic-square',base,now));
+ assert.equal(seenRetentionSeconds(),90*86400);
+});
+test('Firecrawl API request has expected path and authorization',async()=>{
+ process.env.FIRECRAWL_API_KEY='test-key';let details;
+ const output=await fetchDirectory(sources[0],{request:async (url,options)=>{
+   details={url,options};
+   return {ok:true,status:200,json:async()=>({success:true,data:{markdown:magic}})};
+ }});
+ assert.equal(details.url,'https://api.firecrawl.dev/v2/scrape');
+ assert.equal(details.options.headers.Authorization,'Bearer test-key');
+ assert.deepEqual(JSON.parse(details.options.body).formats,['markdown']);
+ assert.equal(output.listings.length,2);
+});
+test('first scan baselines, subsequent scan posts newly added game only, preview read-only',async()=>{
+ process.env.FIRST_RUN_MODE='baseline';
+ let init=false,posts=0,writes=0;
+ const seen=new Set();
+ const store={
+  acquireLock:async()=> 'token',releaseLock:async()=>{},
+  initialized:async()=>init,markInitialized:async()=>{init=true;writes++},
+  markSeenMany:async items=>{items.forEach(x=>seen.add(x.id));writes++},
+  seenMany:async items=>new Set(items.filter(x=>seen.has(x.id)).map(x=>x.id)),
+  refreshSeenMany:async()=>{},markSeen:async id=>{seen.add(id);writes++},recordResult:async()=>{}
+ };
+ let items=parseDirectoryMarkdown(sources[0],magic).slice(0,1);
+ const deps={sources:[sources[0]],fetchDirectory:async()=>({rawLength:100,listings:items}),state:store,sendDiscord:async()=>{posts++;return 'message-1';}};
+ const preview=await runScan({preview:true,deps});assert.equal(preview.candidates,1);assert.equal(writes,0);
+ const seeded=await runScan({deps});assert.equal(seeded.seeded,1);assert.equal(posts,0);
+ const noDuplicate=await runScan({deps});assert.equal(noDuplicate.posted,0);
+ items=parseDirectoryMarkdown(sources[0],magic);
+ const newScan=await runScan({deps});assert.equal(newScan.posted,1);
+ await runScan({deps});assert.equal(posts,1);
 });

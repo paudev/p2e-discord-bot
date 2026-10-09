@@ -13,7 +13,7 @@ export async function sendDiscord(item) {
       description: safe(item.description, 900),
       color: 0x4f7cff,
       fields: [
-        { name: 'Event date (unverified)', value: safe(item.eventDate, 40), inline: true },
+        { name: 'Event date', value: safe(item.eventDate || 'Not announced', 40), inline: true },
         { name: 'Status', value: safe(item.status, 150), inline: false },
         { name: 'Source', value: safe(item.sourceName, 100), inline: true }
       ],

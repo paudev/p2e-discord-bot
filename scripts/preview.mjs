@@ -1,4 +1,2 @@
-import { runScan } from '../src/pipeline.js';
-const result = await runScan({ preview: true });
-console.log(JSON.stringify(result, null, 2));
-if (!result.ok) process.exitCode = 1;
+import {runScan} from '../src/pipeline.js';
+console.log(JSON.stringify(await runScan({preview:true}),null,2));

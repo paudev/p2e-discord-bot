@@ -1,13 +1,12 @@
 {
   "name": "cryptoph-p2e-vercel",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {"node": ">=22"},
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
     "preview": "node --env-file-if-exists=.env scripts/preview.mjs",
-    "check": "node --check api/scan.js && node --check src/feeds.js && node --check src/pipeline.js && node --check src/store.js && node --check src/discord.js"
-  },
-  "dependencies": { "fast-xml-parser": "^5.2.5" }
+    "check": "node --check api/scan.js && node --check src/directories.js && node --check src/firecrawl.js && node --check src/pipeline.js && node --check src/store.js && node --check src/discord.js",
+    "test": "node --test tests/*.test.mjs"
+  }
 }
