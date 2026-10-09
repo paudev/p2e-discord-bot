@@ -53,7 +53,7 @@ test('date window: reject already expired and too distant',()=>{
  assert.ok(validateDiscovery('magic-square',{...base,eventDate:'2026-10-20'},now));
  assert.equal(validateDiscovery('magic-square',{...base,eventDate:'2025-01-01'},now),null);
  assert.equal(validateDiscovery('magic-square',{...base,eventDate:'2027-06-01'},now),null);
- assert.ok(validateDiscovery('magic-square',base,now));
+ assert.equal(validateDiscovery('magic-square',base,now),null);
  assert.equal(seenRetentionSeconds(),90*86400);
 });
 test('Firecrawl API request has expected path and authorization',async()=>{
@@ -78,12 +78,13 @@ test('first scan baselines, subsequent scan posts newly added game only, preview
   seenMany:async items=>new Set(items.filter(x=>seen.has(x.id)).map(x=>x.id)),
   refreshSeenMany:async()=>{},markSeen:async id=>{seen.add(id);writes++},recordResult:async()=>{}
  };
- let items=parseDirectoryMarkdown(sources[0],magic).slice(0,1);
+ const future=new Date(Date.now()+14*86400000).toISOString().slice(0,10);
+ let items=parseDirectoryMarkdown(sources[0],magic).slice(0,1).map(item=>({...item,eventDate:future}));
  const deps={sources:[sources[0]],fetchDirectory:async()=>({rawLength:100,listings:items}),state:store,sendDiscord:async()=>{posts++;return 'message-1';}};
  const preview=await runScan({preview:true,deps});assert.equal(preview.candidates,1);assert.equal(writes,0);
  const seeded=await runScan({deps});assert.equal(seeded.seeded,1);assert.equal(posts,0);
  const noDuplicate=await runScan({deps});assert.equal(noDuplicate.posted,0);
- items=parseDirectoryMarkdown(sources[0],magic);
+ items=parseDirectoryMarkdown(sources[0],magic).map(item=>({...item,eventDate:future}));
  const newScan=await runScan({deps});assert.equal(newScan.posted,1);
  await runScan({deps});assert.equal(posts,1);
 });
@@ -103,4 +104,75 @@ test('Magic Square accepts plain Upcoming badge but excludes non-games',()=>{
  +'[View](https://magicsquare.io/store/projects/stakelayer)\nUpcoming\n'
  +'[Greendale](https://magicsquare.io/store/projects/greendale)\nGames • GameFi\nFarm game\n';
  assert.deepEqual(parseDirectoryMarkdown(sources[0],sample).map(x=>x.title),['Black Snow','Greendale']);
+});
+
+
+test('strict dated-only game events: old, missing, invalid or far-away dates are rejected',()=>{
+ const now=new Date();
+ const near=new Date(now.getTime()+14*86400000).toISOString().slice(0,10);
+ const old=new Date(now.getTime()-14*86400000).toISOString().slice(0,10);
+ const far=new Date(now.getTime()+200*86400000).toISOString().slice(0,10);
+ const src=sources[0];
+ const card=text=> '[Test Game](https://magicsquare.io/store/projects/test-game)\nGames • GameFi\n'+text;
+ const getDate=text=>parseDirectoryMarkdown(src,card(text))[0]?.eventDate;
+ assert.equal(getDate('Beta launches on '+near),near);
+ assert.equal(getDate('Beta launches on '+old),'past-or-outside-window');
+ assert.equal(getDate('Beta launches on '+far),'past-or-outside-window');
+ assert.equal(getDate('Upcoming, no confirmed release date'),null);
+ const monthName=new Intl.DateTimeFormat('en-US',{timeZone:'UTC',month:'long',day:'numeric',year:'numeric'})
+   .format(new Date(near+'T00:00:00Z'));
+ assert.equal(getDate('Playtest starts '+monthName),near);
+ const base={title:'Test Game',url:'https://magicsquare.io/store/projects/test-game',status:'upcoming'};
+ assert.equal(validateDiscovery(src.id,base,now),null);
+ assert.equal(validateDiscovery(src.id,{...base,eventDate:old},now),null);
+ assert.equal(validateDiscovery(src.id,{...base,eventDate:'2026-02-30'},now),null);
+ assert.equal(validateDiscovery(src.id,{...base,eventDate:far},now),null);
+ assert.ok(validateDiscovery(src.id,{...base,eventDate:near},now));
+ const a=validateDiscovery(src.id,{...base,eventDate:near},now);
+ const other=new Date(now.getTime()+15*86400000).toISOString().slice(0,10);
+ assert.notEqual(a.id,validateDiscovery(src.id,{...base,eventDate:other},now).id);
+});
+test('nearest five dated upcoming events win globally, regardless of source order',async()=>{
+ process.env.FIRST_RUN_MODE='post';process.env.MAX_POSTS_PER_RUN='5';
+ const today=Date.now();
+ const date=n=>new Date(today+n*86400000).toISOString().slice(0,10);
+ const groups=[
+  {source:sources[0],numbers:[10,12,14,16,18]},
+  {source:sources[1],numbers:[1,3,5]},
+  {source:sources[2],numbers:[2,4,6]}
+ ];
+ const listings=new Map(groups.map(({source,numbers})=>[source.id,numbers.map((n,i)=>({
+   title:source.id+' '+i,
+   url:source.id==='magic-square'?'https://magicsquare.io/store/projects/game-'+i:
+     source.id==='playtoearn'?'https://playtoearn.com/blockchaingame/game-'+i:
+       'https://dappradar.com/dapp/game-'+i,
+   status:'upcoming',eventDate:date(n)
+ }))]));
+ const initiallyUnseeded=new Set(groups.map(x=>x.source.id)),seen=new Set(),delivered=[];
+ const store={
+  acquireLock:async()=> 'token',releaseLock:async()=>{},
+  initialized:async id=>!initiallyUnseeded.has(id),
+  markInitialized:async id=>{initiallyUnseeded.delete(id)},
+  markSeenMany:async items=>{for(const item of items)seen.add(item.id)},
+  seenMany:async items=>new Set(items.filter(x=>seen.has(x.id)).map(x=>x.id)),
+  refreshSeenMany:async()=>{},markSeen:async id=>{seen.add(id)},
+  recordResult:async()=>{}
+ };
+ const deps={
+  sources:groups.map(x=>x.source),state:store,
+  fetchDirectory:async source=>({rawLength:100,listings:listings.get(source.id)}),
+  sendDiscord:async item=>{delivered.push(item.eventDate);return 'sent-'+delivered.length;}
+ };
+ const preview=await runScan({preview:true,deps});
+ assert.deepEqual(preview.topCandidates.map(x=>x.date),[1,2,3,4,5].map(date));
+ assert.equal(preview.posted,0);
+ const real=await runScan({deps});
+ assert.equal(real.posted,5);
+ assert.deepEqual(delivered,[1,2,3,4,5].map(date));
+});
+test('PlayToEarn game rows support link titles containing pipes',()=>{
+ const line='| | 3 | [**Computers Rh**](https://playtoearn.com/blockchaingame/computers-rh "Computers Rh - Game | PlayToEarn") | [Alpha](https://playtoearn.com/alpha "Alpha") | Yes | Crypto |';
+ const parsed=parseDirectoryMarkdown(sources[1],line);
+ assert.equal(parsed.length,1);
+ assert.equal(parsed[0].title,'Computers Rh');
 });

@@ -12,7 +12,7 @@ const statusPattern = /\b(upcoming|development|alpha|beta|presale|playtest|early
 const gameCategory = /\b(games?\s*[•|:-]\s*(?:play\s*to\s*earn|gamefi|nft|pvp|rpg|metaverse|gaming|strategy|mmorpg|mmo|platform)|p2e|play\s*to\s*earn|gamefi)\b/i;
 const blocked = /\b(casino|gambling|betting|sportsbook)\b/i;
 const trim = s => String(s ?? '').replace(/\s+/g, ' ').replace(/\\([\\*_`])/g, '$1').trim();
-const links = /\[([^\]\n]{2,160})\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g;
+const links = /\[([^\]\n]{2,160})\]\((https?:\/\/[^)\s]+|\/[^)\s]+)(?:\s+\"[^\"]*\")?\)/g;
 const todayAt = (now, timeZone='Asia/Manila') => {
   const parts = new Intl.DateTimeFormat('en-US',{timeZone, year:'numeric', month:'2-digit', day:'2-digit'}).formatToParts(now);
   const val = t => parts.find(p=>p.type===t)?.value;
@@ -25,17 +25,39 @@ export function upcomingWindow(now=new Date()) {
   return {today,until:new Date(Date.parse(today+'T00:00:00Z')+days*86400000).toISOString().slice(0,10)};
 }
 
+// Dates must identify future game events. Publication timestamps and generic
+// "upcoming" labels do not qualify as actual launch/playtest dates.
+const monthIndex=name=>['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+  .indexOf(String(name).toLowerCase().slice(0,3))+1;
+const monthPattern='(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember|t)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
+const dateFormats=[
+  {regex:/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/g,parts:m=>[+m[1],+m[2],+m[3]]},
+  {regex:new RegExp('\\b'+monthPattern+'\\.?\\s+([0-3]?\\d)(?:st|nd|rd|th)?,?\\s+(20\\d{2})\\b','gi'),
+   parts:m=>[+m[3],monthIndex(m[1]),+m[2]]},
+  {regex:new RegExp('\\b([0-3]?\\d)(?:st|nd|rd|th)?\\s+'+monthPattern+'\\.?[,]?\\s+(20\\d{2})\\b','gi'),
+   parts:m=>[+m[3],monthIndex(m[2]),+m[1]]}
+];
+// Require event language immediately preceding the date to avoid irrelevant dates.
+const eventContext=/\b(?:launch(?:es|ing)?|releas(?:e|es|ing)|beta|alpha|playtest|testnet|early[\s-]access|presale|registration|starts?|begins?|opens?|scheduled|slated|debut(?:s)?|goes live)\b[^.!?\n]{0,90}$/i;
 function datedEvent(value,now=new Date()) {
-  const s=trim(value).slice(0,600);
-  // Never confuse a publication/listing timestamp with a scheduled event.
-  const m = s.match(/\b(?:launch(?:ing|es)?|releas(?:e|ing)|beta|alpha|playtest|early access|presale|starts?|begins?|estimated launch date|scheduled for)\b[^.\n]{0,75}?\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/i);
-  if (!m) return null;
-  const [y,month,day] = m.slice(1).map(Number);
-  const date=new Date(Date.UTC(y,month-1,day));
-  if (date.getUTCFullYear()!==y || date.getUTCMonth()+1!==month || date.getUTCDate()!==day) return null;
-  const valueDate=date.toISOString().slice(0,10);
+  const sourceText=trim(value).slice(0,1600);
   const {today,until}=upcomingWindow(now);
-  return valueDate>=today && valueDate<=until ? valueDate : 'past-or-outside-window';
+  const validFuture=[];
+  let foundDatedEvent=false;
+  for(const fmt of dateFormats) {
+    for(const match of sourceText.matchAll(fmt.regex)) {
+      const preceding=sourceText.slice(Math.max(0,match.index-105),match.index);
+      if(!eventContext.test(preceding))continue;
+      const [year,month,day]=fmt.parts(match);
+      const parsed=new Date(Date.UTC(year,month-1,day));
+      if(parsed.getUTCFullYear()!==year||parsed.getUTCMonth()+1!==month||parsed.getUTCDate()!==day)continue;
+      foundDatedEvent=true;
+      const date=parsed.toISOString().slice(0,10);
+      if(date>=today&&date<=until)validFuture.push(date);
+    }
+  }
+  if(validFuture.length)return validFuture.sort()[0];
+  return foundDatedEvent?'past-or-outside-window':null;
 }
 
 function linkFrom(block,predicate,base) {
@@ -56,13 +78,32 @@ function plainCell(value) {
 }
 function listingLinks(value, base) {
   const output=[];
-  for(const match of value.matchAll(/\[([^\]\n]{2,160})\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g)) {
+  for(const match of value.matchAll(links)) {
     try {
       const u=new URL(match[2],base);
       if(u.protocol==='https:') output.push({title:plainCell(match[1]),url:u.href,index:match.index,length:match[0].length});
     } catch { /* invalid link */ }
   }
   return output;
+}
+
+
+function splitTableCells(row) {
+  const cells=[];let current='',square=0,round=0,escaped=false;
+  for(const char of row.trim()){
+    if(escaped){current+=char;escaped=false;continue;}
+    if(char==='\\'){current+=char;escaped=true;continue;}
+    if(char==='[')square++;
+    else if(char===']')square=Math.max(0,square-1);
+    else if(char==='(')round++;
+    else if(char===')')round=Math.max(0,round-1);
+    if(char==='|'&&square===0&&round===0){cells.push(current.trim());current='';}
+    else current+=char;
+  }
+  cells.push(current.trim());
+  if(cells[0]==='')cells.shift();
+  if(cells.at(-1)==='')cells.pop();
+  return cells;
 }
 
 export function parseDirectoryMarkdown(source, markdown) {
@@ -95,7 +136,7 @@ export function parseDirectoryMarkdown(source, markdown) {
     // Read cells as rendered text, and take the name only from a game-detail URL.
     for(const line of markdown.split('\n')) {
       if(!/^\s*\|.*\|\s*$/.test(line) || /\bSponsored\b/i.test(line)) continue;
-      const cells=line.trim().replace(/^\|/,'').replace(/\|$/,'').split(/(?<!\\)\|/).map(x=>x.trim());
+      const cells=splitTableCells(line);
       const statusIndex=cells.findIndex(x=>/^(Development|Develop\.|Alpha|Beta|Presale|Upcoming|Playtest|Early Access)$/i.test(plainCell(x)));
       if(statusIndex<0) continue;
       const game=listingLinks(line,source.url).find(a=>{
@@ -150,8 +191,12 @@ export function validateDiscovery(sourceId,entry,now=new Date()) {
   let url;
   try { const u=new URL(entry.url);if(u.protocol!=='https:'||u.hostname!==new URL(source.url).hostname)return null; u.hash='';url=u.href; }catch{return null;}
   const date=entry.eventDate;
-  if (date==='past-or-outside-window') return null;
-  if (date && (typeof date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date)||date<upcomingWindow(now).today||date>upcomingWindow(now).until)) return null;
-  const id=createHash('sha256').update(`${source.id}:${url}`).digest('hex').slice(0,32);
-  return { id,title,url,status,eventDate:date||null,description:trim(entry.description).slice(0,350)||'Newly listed pre-release P2E/Web3 game. Verify status with the developer.',sourceId,sourceName:source.name,date:now.toISOString() };
+  // Reject missing, invalid and past dates even for externally provided entries.
+  if(typeof date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date))return null;
+  const timestamp=Date.parse(date+'T00:00:00Z');
+  if(!Number.isFinite(timestamp)||new Date(timestamp).toISOString().slice(0,10)!==date)return null;
+  const {today,until}=upcomingWindow(now);
+  if(date<today||date>until)return null;
+  const id=createHash('sha256').update(`${source.id}:${url}:${date}`).digest('hex').slice(0,32);
+  return { id,title,url,status,eventDate:date,description:trim(entry.description).slice(0,350)||'Newly listed pre-release P2E/Web3 game. Verify status with the developer.',sourceId,sourceName:source.name,date:now.toISOString() };
 }
