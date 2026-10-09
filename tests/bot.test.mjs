@@ -222,3 +222,50 @@ test('detail-page enrichment in preview never writes to Redis; cached dates pers
  assert.equal(stats.detailCalls,detailCallsAfterBaseline);
  assert.equal(repeat.cachedDetailCount,2);
 });
+
+
+test('PlayToEarn announcement publication date is not an event date',()=>{
+ const at=new Date('2026-10-10T00:00:00Z');
+ const sample='News\nby Thomas\nSep 21, 2026\n'
+  +'## [RavenQuest Sets October 16 Launch For Fortune Frontier](https://playtoearn.com/news/ravenquest-sets-october-16-launch-for-fortune-s-frontier-extraction-mode)\n'
+  +'RavenQuest will launch its extraction mode on October 16.\n'
+  +'News\nby Thomas\nOct 6, 2026\n'
+  +'## [Game Update Was Published October 6, 2026](https://playtoearn.com/news/game-update-published)\n'
+  +'The update is now live.\n';
+ const articles=parseDirectoryMarkdown(sources.find(x=>x.id==='playtoearn-news'),sample,at);
+ assert.equal(articles.length,1);
+ assert.equal(articles[0].eventDate,'2026-10-16');
+ assert.equal(articles[0].publishedAt,'2026-09-21');
+ assert.equal(articles[0].yearInferred,true);
+ assert.ok(/October 16 Launch/.test(articles[0].evidence));
+});
+test('news never treats publication date as event even near launch wording',()=>{
+ const at=new Date('2026-10-10T00:00:00Z');
+ const sample='News\nby Thomas\nOct 6, 2026\n'
+  +'## [Game Developers Announce a Launch](https://playtoearn.com/news/game-developers-announce-a-launch)\n'
+  +'Launch details have not been dated.\n';
+ const articles=parseDirectoryMarkdown(sources.find(x=>x.id==='playtoearn-news'),sample,at);
+ assert.equal(articles.length,0);
+});
+test('year inference is allowed only with recent publication evidence',()=>{
+ const at=new Date('2026-10-10T00:00:00Z');
+ const src=sources.find(x=>x.id==='playtoearn-news');
+ const mk=pub=>'News\nby Thomas\n'+pub+'\n'
+  +'## [RavenQuest October 16 Launch](https://playtoearn.com/news/ravenquest-october-16-launch)\n'
+  +'Game mode arrives October 16.\n';
+ assert.equal(parseDirectoryMarkdown(src,mk('Sep 21, 2026'),at)[0]?.eventDate,'2026-10-16');
+ assert.equal(parseDirectoryMarkdown(src,mk('Jan 15, 2025'),at).length,0);
+ assert.equal(parseDirectoryMarkdown(src,mk('Sep 21, 2025'),at).length,0);
+});
+test('Magic Square marks estimated dates as estimated and rejects outdated cards',()=>{
+ const at=new Date('2026-10-10T00:00:00Z');
+ const page="[Future Game](https://magicsquare.io/store/projects/future-game)\nGames • GameFi\n"
+  +"Estimated launch date is 31 Dec '26";
+ const result=parseDirectoryMarkdown(sources[0],page,at);
+ assert.equal(result.length,1);
+ assert.equal(result[0].eventDate,'2026-12-31');
+ assert.equal(result[0].estimated,true);
+ assert.match(result[0].evidence,/launch date/);
+ const past=page.replace("31 Dec '26","31 Mar '26");
+ assert.equal(validateDiscovery('magic-square',parseDirectoryMarkdown(sources[0],past,at)[0],at),null);
+});

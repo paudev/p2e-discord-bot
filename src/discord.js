@@ -15,7 +15,13 @@ export async function sendDiscord(item) {
       fields: [
         { name: 'Event date', value: safe(item.eventDate || 'Not announced', 40), inline: true },
         { name: 'Status', value: safe(item.status, 150), inline: false },
-        { name: 'Source', value: safe(item.sourceName, 100), inline: true }
+        { name: 'Source', value: safe(item.sourceName, 100), inline: true },
+        ...(item.evidence ? [{ name: 'Event date evidence', value: safe(item.evidence, 240), inline: false }] : []),
+        { name: 'Date basis', value: item.yearInferred
+          ? 'Month/day stated; year inferred from recent article publication'
+          : (item.estimated ? 'Estimated by listing publisher' : 'Date explicitly stated in source'),
+          inline: false },
+        ...(item.publishedAt ? [{ name: 'Article published', value: safe(item.publishedAt, 40), inline: true }] : [])
       ],
       footer: { text: 'CryptoPH Discovery • Not an endorsement or earning guarantee' },
       timestamp: new Date(item.date).toISOString()

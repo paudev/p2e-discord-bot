@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 
 const namespace='cryptoph:p2e:firecrawl:v1';
 const key=name=>`${namespace}:${name}`;
-const detailKey=url=>key('detail:'+createHash('sha256').update(url).digest('hex').slice(0,32));
+const detailKey=url=>key('detail-evidence-v2:'+createHash('sha256').update(url).digest('hex').slice(0,32));
 export const seenRetentionSeconds=()=>{
   const days=Number(process.env.SEEN_RETENTION_DAYS||90);
   return (Number.isInteger(days)?Math.max(7,Math.min(365,days)):90)*86400;
@@ -69,7 +69,9 @@ export const state={
   async saveDetailResult(item,result) {
     // The cache preserves a discovered launch date across later directory
     // scans, even when the directory itself never displays that date.
-    const payload={date:result.date||null,checkedAt:new Date().toISOString()};
+    const payload={date:result.date||null,evidence:result.evidence||null,
+      eventType:result.eventType||null,estimated:!!result.estimated,yearInferred:!!result.yearInferred,
+      checkedAt:new Date().toISOString()};
     return command('SET',detailKey(item.url),JSON.stringify(payload),'EX',7*86400);
   },
   // One shared rotating cursor across all directory listings. Preview never

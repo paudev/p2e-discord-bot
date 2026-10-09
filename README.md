@@ -37,7 +37,7 @@ This code implements adapters for the three requested public listing pages but t
    Invoke-RestMethod 'https://YOUR-PROJECT.vercel.app/api/scan?preview=1' -Headers @{ Authorization = "Bearer $secret" } | ConvertTo-Json -Depth 10
    ```
 
-7. On cron-job.org schedule an HTTP GET request to `https://YOUR-PROJECT.vercel.app/api/scan` every **four hours**, with the custom header `Authorization: Bearer YOUR_CRON_SECRET`. Firecrawl's free-tier usage depends on current pricing; three directory pages plus up to two game detail pages x 6 runs/day x 30 days is **up to 900 basic page scrapes/month**, before previews, retries, premium features, or any provider changes. Each preview also consumes Firecrawl credits; free quotas can change.
+7. On cron-job.org schedule an HTTP GET request to `https://YOUR-PROJECT.vercel.app/api/scan` every **six hours**, with the custom header `Authorization: Bearer YOUR_CRON_SECRET`. Firecrawl's free-tier usage depends on current pricing; four directory/news pages plus up to two game detail pages x 4 runs/day x 30 days is **up to 720 basic page scrapes/month**, before previews, retries, premium features, or any provider changes. Each preview also consumes Firecrawl credits; free quotas can change.
 8. Run one normal scan. It will baseline existing games without posting. New eligible games discovered on later runs are sent to Discord.
 
 `?preview=1` checks up to 2 extra detail pages without Redis access or Discord posting. `?preview=1&detailOffset=10` samples different detail pages; changing this offset is read-only but consumes Firecrawl credits. Preview includes `detailChecks`, `detailPoolSize`, and `detailOffset`, so you can see individual game dates and expired dates. `?preview=1` also reports `topCandidates` ranked nearest-first **across all sources**, plus `discardedUndated`, `discardedOutOfWindow`, and `discardedOther` counts per source. When preview is used, each source reports `diagnostics` (link counts, table rows, a short URL-redacted public sample) so a layout change can be diagnosed without leaking any API credentials.
@@ -53,6 +53,15 @@ This code implements adapters for the three requested public listing pages but t
 - Keep publisher-facing data checks low-frequency and source-linked. Game status is unverified; no earning promises.
 
 Run `npm run check` for syntax checks. `npm test` runs local parser and deduplication checks. A production API call requires configured Firecrawl, Upstash and Discord credentials; this repo has no credentials.
+
+
+### Event dates versus article dates
+
+The bot now reads **PlayToEarn News** in addition to its new-game directory, Magic Square and DappRadar. Directory listings often contain a status but **no event date**; the PlayToEarn News index includes dated game announcements. The event date is parsed solely from the article **headline or its teaser**, not the surrounding news byline, publish date, modified date, or date of the listing. The publication date is used **only** as a year-reference when a recent article explicitly states a month/day for a launch or game event (e.g. "RavenQuest launches on October 16" published September 21, 2026). Those matches carry `yearInferred: true` and must be manually verified against the original announcement before treating them as confirmed.
+
+Preview and Discord messages include `evidence`, `eventType`, `publishedAt`, `estimated`, and `yearInferred` as applicable. Magic Square often displays a stale **estimated** launch date such as March 31, 2026. Past estimates remain excluded even when a page still says Upcoming. Events outside 90 days or without explicit dates are excluded. An empty list can be a correct result; no dates are fabricated.
+
+At every scan: four directory/news pages and up to two extra game detail pages consume **up to 6 basic Firecrawl page scrapes**. At 4-hour intervals that's about 1,080 scrapes over 30 days, potentially exceeding a 1,000-credit allowance. **Use a 6-hour schedule** (about 720 basic page scrapes/month, excluding previews and retries) or a paid Firecrawl tier, subject to the current plan's actual usage rules. No GitHub Actions.
 
 ## Production posting limit
 

@@ -36,7 +36,13 @@ export async function runScan({preview=false,detailOffset=0,deps={}}={}) {
         if(!saved)continue;
         item._detailCached=true;
         cachedDetailCount++;
-        if(saved.date)item.eventDate=saved.date;
+        if(saved.date){
+          item.eventDate=saved.date;
+          item.evidence=saved.evidence||null;
+          item.eventType=saved.eventType||null;
+          item.estimated=!!saved.estimated;
+          item.yearInferred=!!saved.yearInferred;
+        }
       }
     }
     // Existing directory cards normally show no dates. Inspect a small set of
@@ -68,9 +74,16 @@ export async function runScan({preview=false,detailOffset=0,deps={}}={}) {
           const value=await readDetail(source,entry);
           if(!preview&&typeof storage.saveDetailResult==='function')
             await storage.saveDetailResult(entry,value);
-          if(value.date)entry.eventDate=value.date;
+          if(value.date){
+            entry.eventDate=value.date;
+            entry.evidence=value.evidence||null;
+            entry.eventType=value.eventType||null;
+            entry.estimated=Boolean(value.estimated);
+            entry.yearInferred=Boolean(value.yearInferred);
+          }
           return {source:source.name,title:entry.title,url:entry.url,
-            date:value.date||null,matchedDates:value.matchedDates||0,
+            date:value.date||null,eventType:value.eventType||null,evidence:value.evidence||null,
+            estimated:!!value.estimated,yearInferred:!!value.yearInferred,matchedDates:value.matchedDates||0,
             outOfWindow:value.outOfWindow||0,bytes:value.bytes||0};
         } catch(err) {
           return {source:source.name,title:entry.title,url:entry.url,error:String(err.message||err).slice(0,140)};
@@ -97,11 +110,13 @@ export async function runScan({preview=false,detailOffset=0,deps={}}={}) {
       summary.candidates+=accepted.length;
       // A zero on a known upcoming-oriented page is likely broken extraction,
       // not a valid first baseline. DappRadar may legitimately have no upcoming games.
-      if(!listings.length && source.id!=='dappradar'){
+      if(!listings.length && source.id!=='dappradar' && source.id!=='playtoearn-news'){
         info.error='No listings parsed. Inspect source page or parser before using scan.';
         summary.errors.push({source:source.name,error:info.error});summary.sources.push(info);continue;
       }
-      if(preview){ info.candidates=accepted.slice(0,maxPosts).map(x=>({title:x.title,status:x.status,date:x.eventDate,url:x.url})); summary.sources.push(info);queued.push(...accepted);continue; }
+      if(preview){ info.candidates=accepted.slice(0,maxPosts).map(x=>({title:x.title,status:x.status,date:x.eventDate,
+          eventType:x.eventType||null,evidence:x.evidence||null,estimated:!!x.estimated,
+          yearInferred:!!x.yearInferred,publishedAt:x.publishedAt||null,url:x.url})); summary.sources.push(info);queued.push(...accepted);continue; }
       const initialized=await storage.initialized(source.id);
       if(!initialized && firstRunMode==='baseline'){
         await storage.markSeenMany(accepted,'baseline');
@@ -125,7 +140,9 @@ export async function runScan({preview=false,detailOffset=0,deps={}}={}) {
     queued.sort(compareUpcoming);
     if(preview) {
       summary.topCandidates=queued.slice(0,maxPosts).map(item=>({
-        title:item.title,status:item.status,date:item.eventDate,url:item.url,source:item.sourceName
+        title:item.title,status:item.status,date:item.eventDate,url:item.url,source:item.sourceName,
+        evidence:item.evidence||null,eventType:item.eventType||null,
+        estimated:!!item.estimated,yearInferred:!!item.yearInferred,publishedAt:item.publishedAt||null
       }));
     } else {
       const failedSources=new Set();
@@ -136,7 +153,7 @@ export async function runScan({preview=false,detailOffset=0,deps={}}={}) {
         const info=sourceInfo.get(item.sourceId);
         try {
           const messageId=await post({...item,date:new Date(),
-            status:item.status+' · Event '+item.eventDate+' (not independently verified)'});
+            status:(item.estimated?'Estimated ':'Scheduled ')+(item.eventType||'event')+' · '+item.eventDate+' (source reported; not independently verified)'});
           await storage.markSeen(item.id,'posted:'+messageId);
           postedIds.add(item.id);
           summary.posted++;
@@ -152,9 +169,16 @@ export async function runScan({preview=false,detailOffset=0,deps={}}={}) {
         await storage.markSeenMany(accepted.filter(item=>!postedIds.has(item.id)),'first-run-reviewed');
         await storage.markInitialized(source.id);
       }
-      await storage.recordResult({...summary,ok:summary.errors.length===0});
+      // Write the final status below after distinguishing partial source failures.
+      await storage.recordResult({...summary,partial:summary.errors.some(x=>!String(x.error).startsWith('Discord:')),
+        ok:summary.sources.some(x=>!x.error)&&!summary.errors.some(x=>String(x.error).startsWith('Discord:'))});
     }
-    summary.ok=summary.errors.length===0;
+    // Continue delivering dated events from healthy sources while disclosing
+    // every failed parser/provider. A delivery failure or all sources failing
+    // still makes the run fail.
+    summary.partial=summary.errors.some(x=>!String(x.error).startsWith('Discord:'));
+    summary.ok=summary.sources.some(x=>!x.error)&&
+      !summary.errors.some(x=>String(x.error).startsWith('Discord:'));
     return summary;
   }finally{if(lock)await storage.releaseLock(lock).catch(e=>console.error('Redis lock release:',e));}
 }

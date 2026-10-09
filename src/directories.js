@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 export const sources = Object.freeze([
   { id: 'magic-square', name: 'Magic Square', url: 'https://magicsquare.io/store/upcoming/validation-starting-soon' },
   { id: 'playtoearn', name: 'PlayToEarn', url: 'https://playtoearn.com/new-blockchaingames' },
-  { id: 'dappradar', name: 'DappRadar', url: 'https://dappradar.com/rankings/category/games' }
+  { id: 'dappradar', name: 'DappRadar', url: 'https://dappradar.com/rankings/category/games' },
+  { id: 'playtoearn-news', name: 'PlayToEarn Announcements', url: 'https://playtoearn.com/news' }
 ]);
 
 const statusPattern = /\b(upcoming|development|alpha|beta|presale|playtest|early access)\b/i;
@@ -25,55 +26,90 @@ export function upcomingWindow(now=new Date()) {
   return {today,until:new Date(Date.parse(today+'T00:00:00Z')+days*86400000).toISOString().slice(0,10)};
 }
 
-// Event dates are extracted only from nearby launch/playtest language,
-// never from listing timestamps, copyright years or unspecific "upcoming" tags.
+// Date evidence: parse only a dated game event in the same announcement line.
+// Publication/updated timestamps and directory-listing dates never count.
 const monthIndex=name=>['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
   .indexOf(String(name).toLowerCase().slice(0,3))+1;
 const monthPattern='(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember|t)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
-const dateFormats=[
-  {regex:/\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/g,parts:m=>[+m[1],+m[2],+m[3]]},
-  {regex:new RegExp('\\b'+monthPattern+'\\.?\\s+([0-3]?\\d)(?:st|nd|rd|th)?,?\\s+(20\\d{2})\\b','gi'),
-   parts:m=>[+m[3],monthIndex(m[1]),+m[2]]},
-  {regex:new RegExp('\\b([0-3]?\\d)(?:st|nd|rd|th)?\\s+'+monthPattern+'\\.?[,]?\\s+(20\\d{2})\\b','gi'),
-   parts:m=>[+m[3],monthIndex(m[2]),+m[1]]},
-  // Magic Square uses "31 Mar '26" on individual app detail pages.
-  {regex:new RegExp('\\b([0-3]?\\d)(?:st|nd|rd|th)?\\s+'+monthPattern+'\\.?\\s+[\\u0027\\u2019](\\d{2})\\b','gi'),
-   parts:m=>[2000+(+m[3]),monthIndex(m[2]),+m[1]]},
-  {regex:new RegExp('\\b'+monthPattern+'\\.?\\s+([0-3]?\\d)(?:st|nd|rd|th)?[,]?\\s+[\\u0027\\u2019](\\d{2})\\b','gi'),
-   parts:m=>[2000+(+m[3]),monthIndex(m[1]),+m[2]]}
+const fullYearPatterns=[
+ {re:/\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/g,parts:m=>[+m[1],+m[2],+m[3]]},
+ {re:new RegExp('\\b'+monthPattern+'\\.?\\s+([0-3]?\\d)(?:st|nd|rd|th)?,?\\s+(20\\d{2})\\b','gi'),parts:m=>[+m[3],monthIndex(m[1]),+m[2]]},
+ {re:new RegExp('\\b([0-3]?\\d)(?:st|nd|rd|th)?\\s+'+monthPattern+'\\.?[,]?\\s+(20\\d{2})\\b','gi'),parts:m=>[+m[3],monthIndex(m[2]),+m[1]]},
+ {re:new RegExp('\\b([0-3]?\\d)(?:st|nd|rd|th)?\\s+'+monthPattern+'\\.?\\s+[\\u0027\\u2019](\\d{2})\\b','gi'),parts:m=>[2000+(+m[3]),monthIndex(m[2]),+m[1]]},
+ {re:new RegExp('\\b'+monthPattern+'\\.?\\s+([0-3]?\\d)(?:st|nd|rd|th)?[,]?\\s+[\\u0027\\u2019](\\d{2})\\b','gi'),parts:m=>[2000+(+m[3]),monthIndex(m[1]),+m[2]]}
 ];
-// A year is essential: inferring 2026 for a bare "October 16" could turn
-// an old announcement into a false upcoming launch.
-const eventWords='(?:launch(?:es|ed|ing)?|releas(?:e|es|ed|ing)|beta|alpha|playtest|testnet|early[\\s-]access|presale|pre[\\s-]registration|registration|start(?:s|ing)?|begin(?:s|ning)?|open(?:s|ing)?|scheduled|slated|debut(?:s)?|goes live|go live)';
-const eventBefore=new RegExp('\\b'+eventWords+'\\b[^.!?\\n]{0,100}$','i');
-const eventAfter=new RegExp('^.{0,38}\\b'+eventWords+'\\b','i');
-const staleEvent=/\b(?:previously|last year|originally|was released|already launched|postponed|cancelled)\b/i;
-export function extractUpcomingEventDate(value,now=new Date()) {
-  const sourceText=String(value??'').replace(/\r/g,'').slice(0,100000);
-  const {today,until}=upcomingWindow(now);
-  const upcoming=[];
-  let oldDates=0, matchedDates=0;
-  for(const fmt of dateFormats) {
-    for(const match of sourceText.matchAll(fmt.regex)) {
-      const left=sourceText.slice(Math.max(0,match.index-120),match.index).replace(/\s+/g,' ');
-      const right=sourceText.slice(match.index+match[0].length,match.index+match[0].length+55).replace(/\s+/g,' ');
-      if(!eventBefore.test(left) && !eventAfter.test(right))continue;
-      const [year,month,day]=fmt.parts(match);
-      const parsed=new Date(Date.UTC(year,month-1,day));
-      if(parsed.getUTCFullYear()!==year||parsed.getUTCMonth()+1!==month||parsed.getUTCDate()!==day)continue;
-      matchedDates++;
-      const iso=parsed.toISOString().slice(0,10);
-      if(iso<today||iso>until){oldDates++;continue;}
-      const context=left.slice(-85)+' '+match[0]+' '+right.slice(0,35);
-      if(staleEvent.test(context))continue;
-      upcoming.push(iso);
-    }
+const monthDayPatterns=[
+ {re:new RegExp('\\b'+monthPattern+'\\.?\\s+([0-3]?\\d)(?:st|nd|rd|th)?\\b(?!\\s*,?\\s*20\\d{2})','gi'),parts:m=>[monthIndex(m[1]),+m[2]]},
+ {re:new RegExp('\\b([0-3]?\\d)(?:st|nd|rd|th)?\\s+'+monthPattern+'\\b(?!\\.?\\s*20\\d{2})','gi'),parts:m=>[monthIndex(m[2]),+m[1]]}
+];
+const eventWords='(?:launch(?:es|ing)?|releas(?:e|es|ing)|beta|alpha|playtest|testnet|early[\\s-]access|presale|pre[\\s-]registration|registration|start(?:s|ing)?|begin(?:s|ning)?|open(?:s|ing)?|scheduled|slated|debut(?:s)?|goes live|go live|season\\s+\\d+|tournament|event|extraction mode)';
+const beforeDate=new RegExp('\\b'+eventWords+'\\b[^.!?]{0,92}$','i');
+const afterDate=new RegExp('^[^.!?]{0,45}\\b'+eventWords+'\\b','i');
+const eventTypePattern=/\b(launch(?:es|ing)?|releas(?:e|es|ing)|playtest|early[\s-]access|beta|alpha|testnet|presale|pre[\s-]registration|tournament|season\s+\d+|event|opens?|starts?|begins?)\b/i;
+const publicationOnly=/\b(?:published|posted|updated|last updated|created|listed|written by|copyright)\s*(?:on|at|:)?\s*$/i;
+const stale=/\b(?:previously|originally|last year|already launched|already released|postponed|canceled|cancelled|rescheduled|was launched|was released)\b/i;
+const normalizeLine=line=>line.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+const checkedDate=(y,m,d)=>{
+ const parsed=new Date(Date.UTC(y,m-1,d));
+ return parsed.getUTCFullYear()===y&&parsed.getUTCMonth()+1===m&&parsed.getUTCDate()===d
+  ? parsed.toISOString().slice(0,10):null;
+};
+export function extractUpcomingEventDate(text,now=new Date(),options={}) {
+ const {today,until}=upcomingWindow(now);
+ const out=[], matches=[];
+ const reference=options.publishedDate?new Date(options.publishedDate):null;
+ const reliableReference=reference&&Number.isFinite(reference.getTime()) &&
+   reference.getTime()<=now.getTime()+86400e3 &&
+   now.getTime()-reference.getTime()<=45*86400e3;
+ const referenceYear=reliableReference?reference.getUTCFullYear():null;
+ const lines=String(text??'').slice(0,120000).split(/\r?\n/);
+ for(let i=0;i<lines.length;i++){
+  const raw=normalizeLine(lines[i]);
+  if(!raw||raw.length>1100)continue;
+  const prior=i>0?normalizeLine(lines[i-1]):'';
+  // A deliberately labeled value may be on the line immediately after its field.
+  const labeledPrior=/^(?:#+\s*)?(?:estimated\s+)?(?:launch|release|beta|alpha|playtest|early[\s-]access)\s+date\s*:?\s*$/i.test(prior);
+  for(const fmt of [...fullYearPatterns,...(referenceYear?[...monthDayPatterns]:[])]){
+   for(const m of raw.matchAll(fmt.re)){
+    const left=raw.slice(Math.max(0,m.index-110),m.index);
+    const right=raw.slice(m.index+m[0].length,m.index+m[0].length+55);
+    if(publicationOnly.test(left))continue;
+    const before=beforeDate.test(left),after=afterDate.test(right);
+    if(!before&&!after&&!labeledPrior)continue;
+    const isMonthOnly=monthDayPatterns.includes(fmt);
+    const [year,month,day]=isMonthOnly?[referenceYear,...fmt.parts(m)]:fmt.parts(m);
+    const date=checkedDate(year,month,day);
+    if(!date)continue;
+    // Inferred-year event dates must be later than the *article publication*;
+    // the publication date is never itself the event date.
+    if(isMonthOnly&&date<reference.toISOString().slice(0,10))continue;
+    const snippet=(labeledPrior?prior+' ':'')+raw.slice(Math.max(0,m.index-85),Math.min(raw.length,m.index+m[0].length+50));
+    if(stale.test(snippet))continue;
+    const eventMatch=(left+' '+right).match(eventTypePattern);
+    const eventType=labeledPrior?prior.replace(/[#:]/g,'').trim():(eventMatch?.[1]||'scheduled event');
+    const evidence=snippet.trim().slice(0,220);
+    matches.push({date,evidence,eventType,yearInferred:isMonthOnly,estimated:/\bestimat/i.test(prior+' '+raw)});
+    if(date>=today&&date<=until)out.push(matches.at(-1));
+   }
   }
-  return {date:upcoming.sort()[0]||null,matchedDates,outOfWindow:oldDates};
+ }
+ out.sort((a,b)=>a.date.localeCompare(b.date)||
+   Number(a.yearInferred)-Number(b.yearInferred));
+ const best=out[0]||null;
+ return {date:best?.date||null,evidence:best?.evidence||null,
+   eventType:best?.eventType||null,yearInferred:best?.yearInferred||false,
+   estimated:best?.estimated||false,
+   matchedDates:matches.length,outOfWindow:matches.filter(x=>x.date<today||x.date>until).length};
 }
-function datedEvent(value,now=new Date()) {
-  const {date,matchedDates}=extractUpcomingEventDate(value,now);
-  return date||(matchedDates?'past-or-outside-window':null);
+function taggedDate(value,now=new Date()) {
+ const info=extractUpcomingEventDate(value,now);
+ return {eventDate:info.date||(info.matchedDates?'past-or-outside-window':null),
+  evidence:info.evidence,eventType:info.eventType,
+  yearInferred:info.yearInferred,estimated:info.estimated};
+}
+function datedEvent(value,now=new Date()){
+ const match=extractUpcomingEventDate(value,now);
+ return match.date||(match.matchedDates?'past-or-outside-window':null);
 }
 
 function linkFrom(block,predicate,base) {
@@ -122,7 +158,7 @@ function splitTableCells(row) {
   return cells;
 }
 
-export function parseDirectoryMarkdown(source, markdown) {
+export function parseDirectoryMarkdown(source, markdown, now=new Date()) {
   if (typeof markdown!=='string'||!markdown.trim()) throw new Error('Firecrawl returned empty markdown.');
   if (markdown.length>1_500_000) throw new Error('Source page exceeds 1.5MB markdown safety limit.');
   const entries=[];
@@ -145,7 +181,7 @@ export function parseDirectoryMarkdown(source, markdown) {
       const desc=after.split('\n').map(plainCell).find(x=>x && !/^(Games|Upcoming|View|Image)/i.test(x))||'';
       remember({title:a.title,url:a.url,status:'upcoming',
         description:desc.slice(0,350)||'Upcoming game listing on Magic Square',
-        eventDate:datedEvent(after)});
+        ...taggedDate(after,now)});
     }
   } else if (source.id==='playtoearn') {
     // PlayToEarn wraps status labels in markdown links: [Alpha](...), [Beta](...).
@@ -165,7 +201,37 @@ export function parseDirectoryMarkdown(source, markdown) {
       if(/^(?:no|no-p2e|none|not available)$/i.test(p2e)) continue;
       const status=plainCell(cells[statusIndex]).toLowerCase().replace('develop.','development');
       remember({title:game.title,url:game.url,status,
-        description:'Pre-release game listing on PlayToEarn',eventDate:datedEvent(line)});
+        description:'Pre-release game listing on PlayToEarn',...taggedDate(line,now)});
+    }
+  } else if (source.id==='playtoearn-news') {
+    // Only inspect the HEADLINE and the associated short teaser. Never pass
+    // page-level metadata (including publication dates) as event-date evidence.
+    const all=listingLinks(markdown,source.url)
+      .filter(x=>new URL(x.url).hostname==='playtoearn.com'&&
+        /^\/news\/[^/?#]+\/?$/.test(new URL(x.url).pathname)&&
+        !/^(?:read more|continue reading|news|share|see more)$/i.test(x.title));
+    const visited=new Set();
+    for(const a of all.slice(0,220)){
+      if(visited.has(a.url))continue;
+      visited.add(a.url);
+      if(!/\b(?:launch|release|playtest|beta|alpha|early access|opening|opens|starts|scheduled|event|season|tournament|debut|goes live)\b/i.test(a.title))continue;
+      // Firecrawl news cards usually put the publication date immediately
+      // before the linked headline. It is ONLY used as a year reference.
+      const leading=markdown.slice(Math.max(0,a.index-175),a.index);
+      const pubDates=[...leading.matchAll(/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember|t)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+([0-3]?\d),?\s+(20\d{2})\b/gi)];
+      const stamp=pubDates.at(-1);
+      const publishedDate=stamp?new Date(Date.UTC(+stamp[3],monthIndex(stamp[1])-1,+stamp[2])):null;
+      const after=markdown.slice(a.index+a.length,a.index+a.length+360);
+      const summary=after.split(/\n(?:#{1,4}\s+|\s*(?:News|Video|Press Release|by [A-Z][a-z]+)\s*$)/i)[0].slice(0,300);
+      const result=extractUpcomingEventDate(a.title+'\n'+summary,now,{publishedDate});
+      if(!result.date)continue;
+      remember({
+        title:a.title,url:a.url,status:'upcoming',eventDate:result.date,
+        description:summary?trim(summary).slice(0,350):'Scheduled game announcement on PlayToEarn.',
+        evidence:result.evidence,eventType:result.eventType,
+        yearInferred:result.yearInferred,estimated:result.estimated,
+        publishedAt:publishedDate?.toISOString().slice(0,10)||null
+      });
     }
   } else if (source.id==='dappradar') {
     // Games rankings are typically ACTIVE games. Rank/activity is not evidence of future launch.
@@ -173,7 +239,7 @@ export function parseDirectoryMarkdown(source, markdown) {
     for (const block of markdown.split(/\n(?=\s*\|)/).slice(0,200)) {
       if (!statusPattern.test(block)||!/\b(?:upcoming|development|alpha|beta|presale|playtest|early access)\b/i.test(block)) continue;
       const a=linkFrom(block,(u)=>u.hostname==='dappradar.com' && /^\/dapp\//.test(u.pathname),source.url);
-      if (a) remember({...a,status:block.match(statusPattern)[1].toLowerCase(),description:'Pre-release DappRadar gaming listing',eventDate:datedEvent(block)});
+      if (a) remember({...a,status:block.match(statusPattern)[1].toLowerCase(),description:'Pre-release DappRadar gaming listing',...taggedDate(block,now)});
     }
   } else throw new Error('Unrecognized directory source.');
   return entries.slice(0,150);
@@ -214,5 +280,10 @@ export function validateDiscovery(sourceId,entry,now=new Date()) {
   const {today,until}=upcomingWindow(now);
   if(date<today||date>until)return null;
   const id=createHash('sha256').update(`${source.id}:${url}:${date}`).digest('hex').slice(0,32);
-  return { id,title,url,status,eventDate:date,description:trim(entry.description).slice(0,350)||'Newly listed pre-release P2E/Web3 game. Verify status with the developer.',sourceId,sourceName:source.name,date:now.toISOString() };
+  return { id,title,url,status,eventDate:date,description:trim(entry.description).slice(0,350)||'Newly listed pre-release P2E/Web3 game. Verify status with the developer.',
+    evidence:trim(entry.evidence||'').slice(0,220)||null,
+    eventType:trim(entry.eventType||'').slice(0,70)||null,
+    yearInferred:Boolean(entry.yearInferred),estimated:Boolean(entry.estimated),
+    publishedAt:entry.publishedAt||null,
+    sourceId,sourceName:source.name,date:now.toISOString() };
 }
